@@ -166,10 +166,6 @@
                                 开始识别
                             </button>
                         </div>
-                        <button class="btn btn-outline" id="settingsBtn" style="width: 100%; margin-top: 0.5rem; font-size: 0.8rem; padding: 0.5rem;">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                            设置 API Key
-                        </button>
                     </div>
                 </div>
                 <div class="card" style="margin-top: 1rem;">
@@ -248,37 +244,6 @@
     <div class="toast" id="toast"><span id="toastMessage"></span></div>
 
     <script>
-        // ========== 配置 ==========
-        let GEMINI_API_KEY = localStorage.getItem('gemini_api_key') || '';
-        const getApiUrl = () => `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-        // ==========================
-
-        // API Key 输入弹窗
-        function promptApiKey() {
-            const savedKey = localStorage.getItem('gemini_api_key') || '';
-            const key = prompt(
-                '请输入你的 Gemini API Key：\n\n' +
-                '获取方式：https://aistudio.google.com/apikey\n\n' +
-                '（Key 会保存在浏览器本地，不会上传到任何服务器）',
-                savedKey
-            );
-            if (key && key.trim()) {
-                GEMINI_API_KEY = key.trim();
-                localStorage.setItem('gemini_api_key', GEMINI_API_KEY);
-                showToast('API Key 已保存', 'success');
-                return true;
-            }
-            return false;
-        }
-
-        // 检查 API Key
-        function checkApiKey() {
-            if (!GEMINI_API_KEY) {
-                return promptApiKey();
-            }
-            return true;
-        }
-
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
         const state = { files: [], results: [], processing: false };
@@ -323,16 +288,9 @@
         function updateButtons() { clearBtn.disabled = !state.files.length; processBtn.disabled = !state.files.length || state.processing; }
         clearBtn.addEventListener('click', () => { state.files = []; updateFileList(); updateButtons(); });
         processBtn.addEventListener('click', processFiles);
-        $('settingsBtn').addEventListener('click', () => promptApiKey());
 
         async function processFiles() {
             if (state.processing || !state.files.length) return;
-
-            // 检查 API Key
-            if (!checkApiKey()) {
-                showToast('请先设置 API Key', 'error');
-                return;
-            }
 
             state.processing = true; state.results = [];
             updateButtons(); showLoading('正在准备文件...');
@@ -348,13 +306,12 @@
                         loadingText.textContent = `正在识别: ${f.name} (${i+1}/${images.length})`;
                         const addrs = await extractAddresses(images[i].data, images[i].mimeType);
                         if (addrs?.length) state.results.push(...addrs);
-                        if (i < images.length - 1) await new Promise(r => setTimeout(r, 500));
+                        if (i < images.length - 1) await new Promise(r => setTimeout(r, 300));
                     }
                     f.status = 'done';
                 } catch (e) {
                     console.error('详细错误:', e);
                     f.status = 'error';
-                    alert(`❌ 错误详情: ${e.message}\n\n如果显示网络错误，说明无法访问Google API（中国大陆需要科学上网）`);
                     showToast(`处理失败: ${e.message}`, 'error');
                 }
                 progressFill.style.width = `${++processed / state.files.length * 100}%`;
@@ -384,66 +341,26 @@
             return images;
         }
 
+        // 调用后端 API（API Key 安全存储在 Vercel 环境变量中）
         async function extractAddresses(base64, mime) {
-            const prompt = `Analyze this USPS shipping label image carefully. Extract the RECIPIENT address (the large text in center, NOT the small sender/return address).
-
-For each label, extract:
-- name: Recipient full name
-- address: Full street address (including apt/unit)
-- city: City name
-- state: 2-letter state code (e.g., CA, FL, TX)
-- zip: Full ZIP code (5 or 9 digits, no dashes)
-- tracking: USPS tracking number (remove all spaces, just digits)
-- date: Ship date if visible (format: MM/DD/YY)
-
-IMPORTANT:
-- Tracking numbers should have NO SPACES (e.g., "9300120762600011968566" not "9300 1207 6260...")
-- State must be exactly 2 letters
-- ZIP should be complete (5 or 9 digits)
-
-Return ONLY a JSON array, no markdown, no explanation:
-[{"name":"","address":"","city":"","state":"XX","zip":"","tracking":"","date":""}]
-
-If multiple labels, return all. If none found, return []`;
-
             let res;
             try {
-                res = await fetch(getApiUrl(), {
+                res = await fetch('/api/extract', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [{ inline_data: { mime_type: mime, data: base64 } }, { text: prompt }] }],
-                        generationConfig: { temperature: 0.1, maxOutputTokens: 2000 }
-                    })
+                    body: JSON.stringify({ image: base64, mimeType: mime })
                 });
             } catch (networkErr) {
-                throw new Error(`网络错误：无法连接 Google API`);
+                throw new Error('网络错误：无法连接服务器');
             }
 
+            const data = await res.json();
+
             if (!res.ok) {
-                const errData = await res.json().catch(() => ({}));
-                const errMsg = errData.error?.message || `API 错误 (${res.status})`;
-                // 如果 Key 无效，清除并提示重新输入
-                if (errMsg.includes('leaked') || errMsg.includes('invalid') || errMsg.includes('API key')) {
-                    localStorage.removeItem('gemini_api_key');
-                    GEMINI_API_KEY = '';
-                    throw new Error('API Key 无效或已过期，请重新设置');
-                }
-                throw new Error(errMsg);
+                throw new Error(data.error || `服务器错误 (${res.status})`);
             }
-            const text = (await res.json()).candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-            let json = text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1] || text.match(/\[[\s\S]*\]/)?.[0] || '[]';
-            try {
-                return JSON.parse(json.trim()).map(a => ({
-                    name: a.name || '',
-                    address: a.address || '',
-                    city: a.city || '',
-                    state: (a.state || '').toUpperCase().substring(0, 2),
-                    zip: (a.zip || '').replace(/-/g, ''),
-                    tracking: (a.tracking || '').replace(/\s/g, ''), // 移除所有空格
-                    date: a.date || ''
-                }));
-            } catch { return []; }
+
+            return data.addresses || [];
         }
 
         function updateResults() {
