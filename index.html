@@ -6,6 +6,7 @@
     <title>运单地址识别工具 | Shipping Label Extractor</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
     <style>
         :root {
             --bg: #f8fafc; --bg-card: #ffffff; --text: #1e293b; --text-secondary: #64748b;
@@ -161,9 +162,9 @@
                             <div class="upload-text">
                                 <h3>拖放文件到此处</h3>
                                 <p>或 <span>点击选择文件</span></p>
-                                <p style="margin-top: 0.5rem; font-size: 0.75rem;">支持 PDF、JPG、PNG 格式</p>
+                                <p style="margin-top: 0.5rem; font-size: 0.75rem;">支持 PDF、JPG、PNG、Word、TXT 格式</p>
                             </div>
-                            <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png" multiple>
+                            <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png,.docx,.doc,.txt" multiple>
                         </div>
                         <div class="file-list" id="fileList"></div>
                         <div class="progress-bar" id="progressBar" style="display: none;">
@@ -190,7 +191,7 @@
                     </div>
                     <div class="card-body" style="font-size: 0.85rem; color: var(--text-secondary);">
                         <ol style="padding-left: 1.25rem; display: flex; flex-direction: column; gap: 0.5rem;">
-                            <li>上传运单标签文件（PDF 或图片）</li>
+                            <li>上传文件（PDF、图片、Word、TXT）</li>
                             <li>点击"开始识别"按钮</li>
                             <li>AI 将自动提取地址信息</li>
                             <li>左右滑动表格查看完整数据</li>
@@ -285,8 +286,12 @@
         fileInput.addEventListener('change', e => handleFiles(e.target.files));
 
         function handleFiles(files) {
+            const validTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg', 'text/plain',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'];
+            const validExtensions = ['.pdf', '.jpg', '.jpeg', '.png', '.txt', '.docx', '.doc'];
             for (const file of files) {
-                if (['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'].includes(file.type) || file.name.toLowerCase().endsWith('.pdf')) {
+                const ext = '.' + file.name.split('.').pop().toLowerCase();
+                if (validTypes.includes(file.type) || validExtensions.includes(ext)) {
                     state.files.push({ id: Date.now() + Math.random(), file, name: file.name, size: file.size, status: 'pending' });
                 }
             }
@@ -331,12 +336,22 @@
                 f.status = 'processing'; updateFileList();
                 loadingText.textContent = `正在处理: ${f.name}`;
                 try {
-                    const images = await fileToImages(f.file);
-                    for (let i = 0; i < images.length; i++) {
-                        loadingText.textContent = `正在识别: ${f.name} (${i+1}/${images.length})`;
-                        const addrs = await extractAddresses(images[i].data, images[i].mimeType, apiKey);
+                    const ext = f.name.split('.').pop().toLowerCase();
+                    if (['txt', 'docx', 'doc'].includes(ext)) {
+                        // 文本文件处理
+                        loadingText.textContent = `正在识别文本: ${f.name}`;
+                        const textContent = await fileToText(f.file);
+                        const addrs = await extractAddressesFromText(textContent, apiKey);
                         if (addrs?.length) state.results.push(...addrs);
-                        if (i < images.length - 1) await new Promise(r => setTimeout(r, 300));
+                    } else {
+                        // 图片/PDF 处理
+                        const images = await fileToImages(f.file);
+                        for (let i = 0; i < images.length; i++) {
+                            loadingText.textContent = `正在识别: ${f.name} (${i+1}/${images.length})`;
+                            const addrs = await extractAddresses(images[i].data, images[i].mimeType, apiKey);
+                            if (addrs?.length) state.results.push(...addrs);
+                            if (i < images.length - 1) await new Promise(r => setTimeout(r, 300));
+                        }
                     }
                     f.status = 'done';
                 } catch (e) {
@@ -369,6 +384,93 @@
                 images.push({ data, mimeType: file.type || 'image/jpeg' });
             }
             return images;
+        }
+
+        // 从文本文件提取内容
+        async function fileToText(file) {
+            const ext = file.name.split('.').pop().toLowerCase();
+            if (ext === 'txt') {
+                return await file.text();
+            } else if (ext === 'docx' || ext === 'doc') {
+                const arrayBuffer = await file.arrayBuffer();
+                const result = await mammoth.extractRawText({ arrayBuffer });
+                return result.value;
+            }
+            throw new Error('不支持的文件格式');
+        }
+
+        // 从文本中提取地址（使用 Gemini）
+        async function extractAddressesFromText(text, apiKey) {
+            const prompt = `Analyze this text and extract all shipping/mailing addresses. For each address found, extract:
+- name: Recipient full name
+- address: Full street address (including apt/unit)
+- city: City name
+- state: 2-letter state code (e.g., CA, FL, TX)
+- zip: Full ZIP code (5 or 9 digits, no dashes)
+- tracking: Tracking number if present (remove all spaces)
+- date: Date if visible (format: MM/DD/YY)
+
+IMPORTANT:
+- Extract ALL addresses found in the text
+- State must be exactly 2 letters
+- ZIP should be complete (5 or 9 digits)
+
+Return ONLY a JSON array, no markdown, no explanation:
+[{"name":"","address":"","city":"","state":"XX","zip":"","tracking":"","date":""}]
+
+If no addresses found, return []
+
+TEXT TO ANALYZE:
+${text}`;
+
+            let res;
+            try {
+                res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        generationConfig: { temperature: 0.1, maxOutputTokens: 4000 }
+                    })
+                });
+            } catch (networkErr) {
+                throw new Error('网络错误：无法连接 Gemini API');
+            }
+
+            if (!res.ok) {
+                const errorData = await res.json().catch(() => ({}));
+                const errMsg = errorData.error?.message || `Gemini API 错误 (${res.status})`;
+                throw new Error(errMsg);
+            }
+
+            const data = await res.json();
+            const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+
+            // 解析 JSON
+            let jsonStr = responseText;
+            const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+            if (jsonMatch) {
+                jsonStr = jsonMatch[1];
+            } else {
+                const arrayMatch = responseText.match(/\[[\s\S]*\]/);
+                if (arrayMatch) jsonStr = arrayMatch[0];
+            }
+
+            try {
+                const addresses = JSON.parse(jsonStr.trim());
+                return addresses.map(a => ({
+                    name: a.name || '',
+                    address: a.address || '',
+                    city: a.city || '',
+                    state: (a.state || '').toUpperCase().substring(0, 2),
+                    zip: (a.zip || '').replace(/-/g, ''),
+                    tracking: (a.tracking || '').replace(/\s/g, ''),
+                    date: a.date || ''
+                }));
+            } catch (parseError) {
+                console.warn('JSON 解析失败:', responseText);
+                return [];
+            }
         }
 
         // 直接调用 Gemini API
